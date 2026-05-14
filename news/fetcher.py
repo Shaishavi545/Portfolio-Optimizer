@@ -1,5 +1,3 @@
-
-
 import feedparser
 import re
 from datetime import datetime, timedelta
