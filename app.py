@@ -10,6 +10,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 from scipy.optimize import minimize
+import time
 
 from data.nifty50 import (
     NIFTY50, GOLD_ETFS, BENCHMARK_INDEX, DEFAULT_STOCKS,
@@ -62,6 +63,7 @@ def load_data(tickers, start_date_str):
     """Fetch adjusted close prices for given tickers from yfinance."""
     data = pd.DataFrame()
     failed = []
+
     for ticker in tickers:
         try:
             temp = yf.download(ticker, start=start_date_str, progress=False)
@@ -72,6 +74,7 @@ def load_data(tickers, start_date_str):
             if isinstance(close, pd.DataFrame):
                 close = close.iloc[:, 0]
             data[ticker] = close
+            time.sleep(0.5)  # Anti rate-limit sleep
         except Exception:
             failed.append(ticker)
     return data.dropna(), failed
