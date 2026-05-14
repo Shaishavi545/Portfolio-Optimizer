@@ -1,31 +1,22 @@
 """
-Sentiment analysis engine using FinBERT.
+Sentiment analysis engine using NLTK VADER.
 
-Uses ProsusAI/finbert — a BERT model fine-tuned on financial text.
-Runs locally, no API key needed. ~250MB model download on first run.
+Uses a lightweight, rule-based sentiment analyzer optimized for short texts
+like news headlines. Runs perfectly on Render's free tier with minimal RAM.
 """
 
 import streamlit as st
+import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-# Lazy-load the model to avoid importing torch at module level
-_classifier = None
-
-
-@st.cache_resource(show_spinner="Loading FinBERT sentiment model...")
+@st.cache_resource(show_spinner="Loading NLTK VADER model...")
 def _load_model():
-    """Load the FinBERT model. Cached so it only loads once per session."""
+    """Load the VADER model."""
     try:
-        from transformers import pipeline
-        classifier = pipeline(
-            "sentiment-analysis",
-            model="ProsusAI/finbert",
-            tokenizer="ProsusAI/finbert",
-            top_k=None,  # Return all scores
-        )
-        return classifier
-    except Exception as e:
-        st.warning(f"Could not load FinBERT model: {e}. Sentiment analysis disabled.")
-        return None
+        nltk.data.find('sentiment/vader_lexicon.zip')
+    except LookupError:
+        nltk.download('vader_lexicon', quiet=True)
+    return SentimentIntensityAnalyzer()
 
 
 def analyze_sentiment(text):
@@ -47,26 +38,30 @@ def analyze_sentiment(text):
         }
         Returns None if model is unavailable.
     """
-    classifier = _load_model()
-    if classifier is None:
+    analyzer = _load_model()
+    if analyzer is None:
         return None
 
     try:
-        # FinBERT max length is 512 tokens — truncate long text
-        text = text[:512]
-        results = classifier(text)
+        scores = analyzer.polarity_scores(text)
+        compound = scores['compound']
+        
+        if compound >= 0.05:
+            label = "Positive"
+        elif compound <= -0.05:
+            label = "Negative"
+        else:
+            label = "Neutral"
 
-        if results and len(results) > 0:
-            scores = results[0]  # list of {label, score} dicts
-            # Find the label with highest confidence
-            best = max(scores, key=lambda x: x["score"])
-            all_scores = {s["label"].capitalize(): round(s["score"], 4) for s in scores}
-
-            return {
-                "label": best["label"].capitalize(),
-                "score": round(best["score"], 4),
-                "all_scores": all_scores,
+        return {
+            "label": label,
+            "score": round(abs(compound), 4) if abs(compound) > 0 else 0.0,
+            "all_scores": {
+                "Positive": round(scores['pos'], 4),
+                "Negative": round(scores['neg'], 4),
+                "Neutral": round(scores['neu'], 4)
             }
+        }
     except Exception:
         pass
 
