@@ -1,0 +1,1 @@
+# Keep the predictions directory tracked by git, but ignore large cached files
