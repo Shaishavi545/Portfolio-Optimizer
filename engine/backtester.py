@@ -11,8 +11,13 @@ class WalkForwardBacktester:
         sector_map: dict mapping ticker -> sector.
         config: dictionary containing constraints.
         """
-        self.data = data
-        self.tickers = tickers
+        # Align tickers to columns actually present in data
+        valid_tickers = [t for t in tickers if t in data.columns]
+        if not valid_tickers:
+            raise ValueError("None of the requested tickers exist in the provided market data.")
+            
+        self.data = data[valid_tickers]
+        self.tickers = valid_tickers
         self.sector_map = sector_map
         self.config = config
         
@@ -64,36 +69,68 @@ class WalkForwardBacktester:
         return True
 
     def optimize_portfolio(self, expected_returns, cov_matrix):
-        """Optimize using constraints."""
+        """Optimize portfolio weights using a two-pass robust approach.
+        
+        Pass 1: Maximize Sharpe ratio (preferred — differentiates strategies).
+        Pass 2: Minimize variance (fallback — always feasible, still constraint-respecting).
+        
+        This prevents the silent collapse to equal weights when SLSQP fails on
+        the Sharpe objective (which happens frequently with noisy empirical returns).
+        """
         n = len(self.tickers)
         init_guess = np.ones(n) / n
         bounds = tuple((0.0, self.max_weight) for _ in range(n))
         
-        # Constraints: sum to 1, and sector limits
+        # Sector constraint factory — uses closure to capture sector_name correctly.
         def sector_constraint_factory(sector_name, cap):
             def constraint(w):
-                sector_weight = sum(w[i] for i, t in enumerate(self.tickers) if self.sector_map.get(t, "Other") == sector_name)
-                return cap - sector_weight
+                return cap - sum(
+                    w[i] for i, t in enumerate(self.tickers)
+                    if self.sector_map.get(t, "Other") == sector_name
+                )
             return constraint
 
         constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
-        
         unique_sectors = set(self.sector_map.values())
         for sector in unique_sectors:
             constraints.append({"type": "ineq", "fun": sector_constraint_factory(sector, self.sector_caps)})
 
+        opts = {"maxiter": 1000, "ftol": 1e-9}
+
+        # ── Pass 1: Sharpe maximization ──────────────────────────────────
         def neg_sharpe(w):
             ret = np.dot(w, expected_returns)
-            vol = np.sqrt(np.dot(w.T, np.dot(cov_matrix, w)))
-            if vol == 0: return 0.0
+            vol = np.sqrt(np.clip(np.dot(w.T, np.dot(cov_matrix, w)), 1e-12, None))
             return -(ret - self.risk_free_rate) / vol
 
-        res = minimize(neg_sharpe, init_guess, method="SLSQP", bounds=bounds, constraints=constraints)
-        
-        if not res.success:
-            return np.ones(n) / n
-            
-        return res.x
+        res = minimize(
+            neg_sharpe, init_guess, method="SLSQP",
+            bounds=bounds, constraints=constraints, options=opts
+        )
+
+        if res.success and np.all(res.x >= -1e-8) and np.isclose(res.x.sum(), 1.0, atol=1e-4):
+            return np.clip(res.x, 0.0, None) / np.clip(res.x, 0.0, None).sum()
+
+        # ── Pass 2: Minimum variance fallback ───────────────────────────
+        # Min-variance is convex → SLSQP almost always converges.
+        # Gives different weights than equal-weight, preserving strategy differentiation.
+        def portfolio_variance(w):
+            return np.dot(w.T, np.dot(cov_matrix, w))
+
+        res2 = minimize(
+            portfolio_variance, init_guess, method="SLSQP",
+            bounds=bounds, constraints=constraints, options=opts
+        )
+
+        if res2.success and np.all(res2.x >= -1e-8) and np.isclose(res2.x.sum(), 1.0, atol=1e-4):
+            w = np.clip(res2.x, 0.0, None)
+            return w / w.sum()
+
+        # ── Ultimate fallback: max-weight-capped equal weight ────────────
+        # Should be extremely rare after the two passes above.
+        fallback = np.ones(n) / n
+        fallback = np.clip(fallback, 0.0, self.max_weight)
+        return fallback / fallback.sum()
         
     def run_backtest(self, strategy="Markowitz", historical_sentiments=None, lstm_prob_series=None):
         """
@@ -102,7 +139,7 @@ class WalkForwardBacktester:
         historical_sentiments: dict of date -> {ticker: sentiment_dict}
         lstm_prob_series: pd.Series of date -> probability of high vol
         """
-        returns = self.data.pct_change().dropna(how='all').fillna(0)
+        returns = self.data[self.tickers].pct_change().dropna(how='all').fillna(0)
         dates = returns.index[self.window:]
         
         portfolio_value = 1.0
@@ -112,9 +149,8 @@ class WalkForwardBacktester:
         current_weights = np.ones(n) / n
         
         for i, date in enumerate(dates):
-            # The realized return is computed from the close of `date-1` to the close of `date`.
-            # Our decision was made at `date-1` close, so it's strictly point-in-time.
-            day_returns = returns.loc[date].values
+            # Point-in-time daily realized returns aligned to self.tickers
+            day_returns = returns.loc[date, self.tickers].values
             gross_return = np.dot(current_weights, day_returns)
             tx_cost = 0.0
             
@@ -123,54 +159,79 @@ class WalkForwardBacktester:
             # Standard: if i % freq == 0, we form the new portfolio at the close of `date`.
             if i % self.rebalance_freq == 0:
                 hist_returns = returns.loc[:date].iloc[-self.window:]
-                
+
                 mean_rets = hist_returns.mean() * 252
                 cov_matrix = hist_returns.cov() * 252
-                
+
                 new_weights = current_weights.copy()
-                
-                # Check for NaNs
+                invariants_already_checked = False
+
+                # Check for NaNs/degenerate data → safe fallback
                 if cov_matrix.isna().sum().sum() > 0 or mean_rets.isna().sum() > 0:
                     new_weights = np.ones(n) / n
+
                 else:
                     if strategy == "EqualWeight":
+                        # Pure equal weight — the benchmark baseline.
                         new_weights = np.ones(n) / n
+
                     elif strategy == "Markowitz":
+                        # Maximize Sharpe using HISTORICAL mean returns.
+                        # Differentiator: purely data-driven, no equilibrium prior.
                         new_weights = self.optimize_portfolio(mean_rets.values, cov_matrix.values)
+
                     elif "BL" in strategy:
-                        # Assume market cap weights are roughly equal for simplicity if we don't have true caps
-                        market_weights = np.ones(n) / n 
-                        implied_rets = compute_implied_returns(cov_matrix, market_weights, risk_aversion=2.5)
-                        
+                        # ── Black-Litterman: equilibrium-tilted returns ──────────
+                        # Key difference from Markowitz: uses CAPM-implied equilibrium
+                        # returns (Pi = δ·Σ·w_mkt) as the prior, NOT raw historical means.
+                        # This shrinks noisy sample estimates toward a principled prior,
+                        # producing meaningfully different allocations even without views.
+                        market_weights = np.ones(n) / n
+                        implied_rets = compute_implied_returns(
+                            cov_matrix, market_weights, risk_aversion=2.5
+                        )
+
                         P, Q, Omega = None, None, None
-                        
                         if "FinBERT" in strategy and historical_sentiments:
-                            # We can only use sentiments published BEFORE or ON `date`
-                            # We assume the dict already filters out future data.
                             sentiment_t = historical_sentiments.get(date, {})
-                            P, Q, Omega = generate_black_litterman_views(self.tickers, implied_rets, cov_matrix, sentiment_t)
-                            
-                        post_rets, post_cov = optimize_black_litterman(implied_rets, cov_matrix, P, Q, Omega)
-                        
-                        # Dynamically tighten constraints if LSTM detects high risk
+                            P, Q, Omega = generate_black_litterman_views(
+                                self.tickers, implied_rets, cov_matrix, sentiment_t
+                            )
+
+                        # posterior_rets will equal implied_rets when P/Q/Omega are None
+                        # (no views). BL still differs from Markowitz because implied_rets
+                        # (risk-aversion × Σ × w_eq) ≠ historical mean returns.
+                        post_rets, post_cov = optimize_black_litterman(
+                            implied_rets, cov_matrix, P, Q, Omega
+                        )
+
+                        # ── LSTM constraint tightening ───────────────────────────
+                        # Temporarily reduce max_weight during predicted high-vol regimes.
+                        # IMPORTANT: run invariant check BEFORE restoring max_weight so
+                        # we validate against the constraint actually used.
                         old_max_weight = self.max_weight
                         if "LSTM" in strategy and lstm_prob_series is not None:
-                            if date in lstm_prob_series:
-                                p_high_vol = lstm_prob_series.loc[date]
+                            if date in lstm_prob_series.index:
+                                p_high_vol = float(lstm_prob_series.loc[date])
                                 if p_high_vol > 0.8:
-                                    # Defensive mode: force more diversification
                                     self.max_weight = min(self.max_weight, 0.08)
-                                    
+
                         new_weights = self.optimize_portfolio(post_rets.values, post_cov.values)
-                        self.max_weight = old_max_weight # Restore
-                        
-                # Invariants check
-                self.check_invariants(new_weights, current_weights, date)
-                
+
+                        # Check invariants while the (possibly tightened) max_weight is active
+                        self.check_invariants(new_weights, current_weights, date)
+                        invariants_already_checked = True
+
+                        self.max_weight = old_max_weight  # Restore after check
+
+                # Invariants check for all strategies that haven't done it yet
+                if not invariants_already_checked:
+                    self.check_invariants(new_weights, current_weights, date)
+
                 # Transaction Costs (turnover is sum of absolute weight changes / 2)
                 turnover = np.sum(np.abs(new_weights - current_weights)) / 2.0
                 tx_cost = turnover * (self.transaction_cost_bps / 10000.0)
-                
+
                 current_weights = new_weights
                 
             net_return = gross_return - tx_cost

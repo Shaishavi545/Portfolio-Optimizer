@@ -95,6 +95,16 @@ def render_ui():
                 st.error("Failed to load market data.")
                 return
                 
+            if failed:
+                st.warning(f"⚠️ Could not fetch data for: {', '.join(failed)}. Running backtest with available tickers.")
+
+            valid_tickers = [t for t in tickers if t in data.columns]
+            if len(valid_tickers) < 3:
+                st.error("Fewer than 3 valid tickers available. Please select additional stocks.")
+                return
+
+            tickers = valid_tickers
+                
             config = {
                 "max_weight": max_weight,
                 "sector_cap": sector_cap,

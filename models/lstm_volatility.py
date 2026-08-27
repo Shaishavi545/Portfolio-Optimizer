@@ -104,8 +104,11 @@ def train_lstm(tensors, epochs=50, lr=0.01):
         val_preds = model(X_val)
         val_loss = criterion(val_preds, y_val).item()
         
-        preds_np = val_preds.numpy()
-        y_val_np = y_val.numpy()
+        # Flatten to 1D — sklearn metrics require 1D arrays.
+        # Without this, (N, 1) arrays cause f1_score to interpret this
+        # as multilabel classification and return 0.
+        preds_np = val_preds.numpy().flatten()
+        y_val_np = y_val.numpy().flatten()
         
         try:
             auc = roc_auc_score(y_val_np, preds_np)
