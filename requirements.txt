@@ -10,4 +10,5 @@ feedparser>=6.0.10
 nltk>=3.8.0
 transformers>=4.38.0
 torch>=2.2.0
+torchvision>=0.17.0
 scikit-learn>=1.4.0
