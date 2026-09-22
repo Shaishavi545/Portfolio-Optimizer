@@ -1,0 +1,65 @@
+{
+  "generated_at": "2026-09-22T16:28:56.822699+00:00",
+  "run_date": "2026-09-22",
+  "pipeline_version": "v2.0",
+  "universe": [
+    "HDFCBANK.NS",
+    "INFY.NS",
+    "RELIANCE.NS",
+    "HINDUNILVR.NS",
+    "TCS.NS"
+  ],
+  "status": "ok",
+  "errors": [
+    "Failed tickers: ['HDFCBANK.NS']"
+  ],
+  "sentiment_views": {
+    "INFY.NS": {
+      "overall_label": "Neutral",
+      "overall_score": 0.0,
+      "confidence": 0.0,
+      "positive_count": 0,
+      "negative_count": 0,
+      "neutral_count": 0,
+      "risk_flag": false
+    },
+    "RELIANCE.NS": {
+      "overall_label": "Positive",
+      "overall_score": 0.2435,
+      "confidence": 0.9755,
+      "positive_count": 1,
+      "negative_count": 0,
+      "neutral_count": 0,
+      "risk_flag": false
+    },
+    "HINDUNILVR.NS": {
+      "overall_label": "Neutral",
+      "overall_score": 0.0,
+      "confidence": 0.0,
+      "positive_count": 0,
+      "negative_count": 0,
+      "neutral_count": 0,
+      "risk_flag": false
+    },
+    "TCS.NS": {
+      "overall_label": "Neutral",
+      "overall_score": 0.0,
+      "confidence": 0.0,
+      "positive_count": 0,
+      "negative_count": 0,
+      "neutral_count": 0,
+      "risk_flag": false
+    }
+  },
+  "optimal_weights": {
+    "INFY.NS": 0.3,
+    "RELIANCE.NS": 0.3,
+    "HINDUNILVR.NS": 0.1,
+    "TCS.NS": 0.3
+  },
+  "portfolio_analytics": {
+    "expected_annual_return": -0.240702,
+    "annual_volatility": 0.191343,
+    "sharpe_ratio": -1.6238
+  }
+}
